@@ -1,7 +1,8 @@
 #include "result.h"
 #include "relation.h"
 //#define buffSize 683
-#define buffSize 65536
+//#define buffSize 65536
+#define buffSize 10000
 
 
 result* resultNodeInit( void ){ //arxikopoihsh enos komvou ths listas twn apotelesmatwn
@@ -49,6 +50,7 @@ result* resultListComposition(result* resultList, JoinArgs jArgs[], int size){
 					newNode->bufferA[write] = jArgs[i].resList->bufferA[j];
 					write++;
 					newNode->count = newNode->count + 1;
+					resultList->next = newNode;
 					resultList = newNode;		
 				}
 			}
@@ -72,16 +74,16 @@ result* addResultTuple( result* resNode , uint64_t rowidA, uint64_t valueA, uint
 		newResNode->count = 1;
 		newResNode->next = NULL;
 		resNode->next = newResNode;
-		resNode = resNode->next;
-		return newResNode;
+		resNode = newResNode;
+		free(tA);
 	}
 	else{ //xwraei ston trexonta komvo
 		tuple* tA = newTuple(rowidA, valueA, intermTableIdx);
 		resNode->bufferA[ resNode->count ] = *tA;
 		resNode->count = resNode->count + 1;
-		return resNode;
+		free(tA);
 	}
-	
+	return resNode;
 }
 
 void printResultList( result* resList ){ //ektupwsh ths listas apotelesmatwn ths join

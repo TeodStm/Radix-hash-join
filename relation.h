@@ -21,6 +21,15 @@ typedef struct relation{
 	uint64_t num_tuples;
 }relation;
 
+typedef struct OrderedFillArgs{
+	relation *newRel;
+	relation *rel;
+	uint64_t *pHist;
+	int start;
+	int end;
+	uint64_t size;
+}OrderedFillArgs;
+
 /***Tuple methods***/
 
 //tuple* newTuple(uint64_t, uint64_t);
@@ -41,6 +50,7 @@ void addTupleIndex(relation*, uint64_t, uint64_t, uint64_t, int);
 
 int relationFillrand(relation*, uint64_t);
 int orderedRelationFill( relation*, relation*, uint64_t*, uint64_t);
+void *orderedRelationFillThrd( void *arg );
 result* compareBuckets( relation*, relation*, uint64_t*, uint64_t*, int);
 
 //void joinBuckets( relation* relA, relation* relB, uint64_t* histA, uint64_t* histB, int bucketIndxA, int bucketIndxB, int buckNum, result* resList, int* bucket, int* chain, int indexedRel );

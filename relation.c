@@ -8,13 +8,15 @@
 #include "histogram.h"
 #include "JobQueue.h"
 
-#define N_h1 15 //gia thn h1 sunarthsh katakermatismou
+#define N_h1 4 //gia thn h1 sunarthsh katakermatismou
 #define HashValue2 23
 #define NUM_OF_THREADS 3
 
 pthread_mutex_t queueMtx, jobEndMtx, barrMtx;
 sem_t sem;
 pthread_barrier_t barrier;
+
+pthread_mutex_t relOrdMtx;
 int endOfJobs;
 
 JQueue *jq;
@@ -126,7 +128,6 @@ int relationFillrand(relation* rel, uint64_t size){ //gemizei ena relation me tu
 	return rel->num_tuples; //success
 }
 
-
 int orderedRelationFill( relation* ordRel, relation* rel, uint64_t* P_hist, uint64_t size){ //vazei se seira ta tuples mia sxeshs (me vash to hash value) se enan neo pinaka xrhsimopoiontas to athroistiko istogramma
 	
 	int bucket;
@@ -153,6 +154,39 @@ int orderedRelationFill( relation* ordRel, relation* rel, uint64_t* P_hist, uint
 	}
 	return 1;
 	
+}
+
+void *orderedRelationFillThrd( void *arg ){
+	int bucket, relIdx;
+	uint64_t rowId;
+	uint64_t value;
+	uint64_t intermTableIdx;
+	OrderedFillArgs *ordArgs;
+	
+	ordArgs = (OrderedFillArgs *)arg;
+	
+	if( ordArgs->newRel == NULL || ordArgs->rel == NULL || ordArgs->pHist == NULL ){
+		printf("orderedRelationFill: Some of arguments given was invalid(NULL)\n");
+		fflush(stdout);
+		pthread_exit(NULL);
+	}
+	
+	for( int i = ordArgs->start; i < ordArgs->end + 1; i++){
+		bucket = hashFunction_1( (int)ordArgs->size, (int)(ordArgs->rel->tuples[i].payload) );
+		//printf("bucket index is %d\n",bucket);
+		
+		pthread_mutex_lock(&relOrdMtx);
+		relIdx = ordArgs->pHist[bucket];
+		ordArgs->pHist[bucket] = ordArgs->pHist[bucket] + 1;
+		pthread_mutex_unlock(&relOrdMtx);
+		
+		rowId = ordArgs->rel->tuples[i].key;
+		value = ordArgs->rel->tuples[i].payload;
+		intermTableIdx = ordArgs->rel->tuples[i].intermIdx;
+		
+		addTupleIndex( ordArgs->newRel, rowId, value, intermTableIdx, relIdx );
+	}
+	pthread_exit(NULL);
 }
 
 result* compareBuckets( relation* relA, relation* relB, uint64_t* histA, uint64_t* histB, int hsize){
@@ -299,8 +333,6 @@ result* compareBuckets( relation* relA, relation* relB, uint64_t* histA, uint64_
 	//printResultList(resultList);
 	
 }
-
-
 
 void joinBuckets_0( relation* relA, relation* relB, uint64_t* histA, uint64_t* histB, int bucketIndxA, int bucketIndxB, int buckNum, result* resList ){
 	
@@ -498,11 +530,11 @@ result* RadixHashJoin( relation* relA, relation* relB){
 	pthread_t *tPool;
 	uint64_t *histA, *histB, *P_histA, *P_histB, histSz;
 	HistArgs h[NUM_OF_THREADS];
-	int n, tValues, i;
+	int tValues, i;
+	result *returnResList;
 	/*****Creating histogram *******/
 	histSz = 1;
-	n = 10;
-	for( i = 0; i < n; i++){
+	for( i = 0; i < N_h1; i++){
 		histSz = histSz*2;
 	}
 	
@@ -604,7 +636,7 @@ result* RadixHashJoin( relation* relA, relation* relB){
 	for( i = 0; i < NUM_OF_THREADS; i++ ){
 		pthread_join( tPool[i], NULL ); //anamonh twn threads mexri na oloklhrwsoun thn ergasia tous
 	}
-	free(tPool);
+	//free(tPool);
 	
 	for( i = 0; i < histSz; i++ ){
 		for( int j = 0; j < NUM_OF_THREADS; j++ ){
@@ -617,31 +649,76 @@ result* RadixHashJoin( relation* relA, relation* relB){
 	fill_P_HistTable( P_histA, histA, histSz );
 	fill_P_HistTable( P_histB, histB, histSz );
 	
-	relation *relAord, *relBord; //AUtoi oi pinakes tha exoune tis times twn sxesewn taksinomhmenes kata hashvalue ths hash function 1
+	/***2h parallhlopoihsh apo edw kai katw***/
+	
+	relation *relAord, *relBord; //Autoi oi pinakes tha exoune tis times twn sxesewn taksinomhmenes kata hashvalue ths hash function 1
+	OrderedFillArgs ordArgs[NUM_OF_THREADS];
 	relAord = initRelation( relA->num_tuples );
 	relBord = initRelation( relB->num_tuples );
 	
-	/** Ginetai taksinomhsh stous neous pinakes apo tis arxikes sxeseis **/
-	if( orderedRelationFill( relAord, relA, P_histA, histSz ) != 0 ){
-		/*
-		printf("     Ordered relation A:\n");
-		printRelation( relAord );
-		printf("\n");
-		*/
+	pthread_mutex_init(&relOrdMtx, NULL);
+	
+	/**relA**/
+	tValues = (int)(relA->num_tuples) / NUM_OF_THREADS;
+	
+	ordArgs[0].start = 0;
+	ordArgs[0].end = tValues - 1; //-1 logw index kai oxi count
+	for( i = 1; i < NUM_OF_THREADS; i++ ){
+		ordArgs[i].start = ordArgs[i-1].end + 1;
+		ordArgs[i].end = ordArgs[i].start + tValues -1; //-1 logw index kai oxi count
+	}
+	ordArgs[NUM_OF_THREADS-1].end = ordArgs[NUM_OF_THREADS-1].end + (int)(relA->num_tuples) % NUM_OF_THREADS;
+	
+	for( i = 0; i < NUM_OF_THREADS; i++ ){
+		ordArgs[i].rel = relA;
+		ordArgs[i].newRel = relAord;
+		ordArgs[i].pHist = P_histA;
+		ordArgs[i].size = histSz;
+	}	
+	
+	for( i = 0; i < NUM_OF_THREADS; i++ ){
+		pthread_create( &tPool[i], NULL, orderedRelationFillThrd, (void*)&ordArgs[i]);
 	}
 	
-	if( orderedRelationFill( relBord, relB, P_histB, histSz ) != 0 ){
-		/* 
-		printf("     Ordered relation B:\n");
-		printRelation( relBord );
-		printf("\n");
-		*/
+	for( i = 0; i < NUM_OF_THREADS; i++ ){
+		pthread_join( tPool[i], NULL ); //anamonh twn threads mexri na oloklhrwsoun thn ergasia tous
 	}
-	//deleteRelation(relA);
-	//deleteRelation(relB);
+	
+	/**relB**/
+	tValues = (int)(relB->num_tuples) / NUM_OF_THREADS;
+	
+	ordArgs[0].start = 0;
+	ordArgs[0].end = tValues - 1; //-1 logw index kai oxi count
+	for( i = 1; i < NUM_OF_THREADS; i++ ){
+		ordArgs[i].start = ordArgs[i-1].end + 1;
+		ordArgs[i].end = ordArgs[i].start + tValues -1; //-1 logw index kai oxi count
+	}
+	ordArgs[NUM_OF_THREADS-1].end = ordArgs[NUM_OF_THREADS-1].end + (int)(relB->num_tuples) % NUM_OF_THREADS;
+	
+	for( i = 0; i < NUM_OF_THREADS; i++ ){
+		ordArgs[i].rel = relB;
+		ordArgs[i].newRel = relBord;
+		ordArgs[i].pHist = P_histB;
+		ordArgs[i].size = histSz;
+	}
+	
+	for( i = 0; i < NUM_OF_THREADS; i++ ){
+		pthread_create( &tPool[i], NULL, orderedRelationFillThrd, (void*)&ordArgs[i]);
+	}
+	
+	for( i = 0; i < NUM_OF_THREADS; i++ ){
+		pthread_join( tPool[i], NULL ); //anamonh twn threads mexri na oloklhrwsoun thn ergasia tous
+	}
+	free(tPool);
+	
+	returnResList = compareBuckets( relAord, relBord, histA, histB, histSz); //epistrefei result list
+	
+	pthread_mutex_destroy(&relOrdMtx);
+	deleteRelation(relAord);
+	deleteRelation(relBord);
 	printf("Prin thn compareBuckets\n");
-	return compareBuckets( relAord, relBord, histA, histB, histSz); //epistrefei result list
 	
+	return returnResList;
 }
 
 void printJoinResults(relation* relAid, relation* relBid){ //apla ektupwsh apotelesmatvn ths join
